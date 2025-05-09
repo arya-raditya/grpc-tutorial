@@ -9,7 +9,8 @@ pub mod services {
 use services::{
     payment_service_server::{PaymentService, PaymentServiceServer},
     transaction_service_server::{TransactionService, TransactionServiceServer},
-    PaymentRequest, PaymentResponse, TransactionRequest, TransactionResponse,
+    chat_service_server::{ChatService, ChatServiceServer},
+    PaymentRequest, PaymentResponse, TransactionRequest, TransactionResponse, ChatMessage,
 };
 
 #[derive(Default)]
@@ -35,7 +36,7 @@ impl TransactionService for MyTransactionService {
 
     async fn get_transaction_history(
         &self,
-        request: Request<TransactionRequest>,
+        _request: Request<TransactionRequest>,
     ) -> Result<Response<Self::GetTransactionHistoryStream>, Status> {
         let (tx, rx) = mpsc::channel(4);
         
@@ -54,15 +55,45 @@ impl TransactionService for MyTransactionService {
     }
 }
 
+#[derive(Default)]
+pub struct MyChatService {}
+
+#[tonic::async_trait]
+impl ChatService for MyChatService {
+    type ChatStream = ReceiverStream<Result<ChatMessage, Status>>;
+
+    async fn chat(
+        &self,
+        request: Request<tonic::Streaming<ChatMessage>>,
+    ) -> Result<Response<Self::ChatStream>, Status> {
+        let (tx, rx) = mpsc::channel(10);
+        let mut stream = request.into_inner();
+
+        tokio::spawn(async move {
+            while let Some(message) = stream.message().await.unwrap() {
+                let reply = ChatMessage {
+                    user_id: message.user_id.clone(),
+                    message: format!("CS: Received '{}'", message.message),
+                };
+                tx.send(Ok(reply)).await.unwrap();
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "[::1]:50051".parse()?;
     let payment_service = MyPaymentService::default();
     let transaction_service = MyTransactionService::default();
+    let chat_service = MyChatService::default();
 
     Server::builder()
         .add_service(PaymentServiceServer::new(payment_service))
         .add_service(TransactionServiceServer::new(transaction_service))
+        .add_service(ChatServiceServer::new(chat_service))
         .serve(addr)
         .await?;
 
